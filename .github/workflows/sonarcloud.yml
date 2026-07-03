@@ -37,7 +37,10 @@ jobs:
             -Dsonar.organization=sandeepa-dilakshana
             -Dsonar.projectKey=SandeepaDilakshana_pygoat-security-analysis
             -Dsonar.sources=pygoat
-            -Dsonar.qualitygate.wait=true 
+            -Dsonar.qualitygate.wait=true
+            -Dsonar.scm.disabled=true
+            -Dsonar.python.version=3.11
+            -Dsonar.sourceEncoding=UTF-8
 
       - name: Calculate Duration
         id: sonar_run
