@@ -23,11 +23,11 @@ jobs:
           docker run -d --name sonarqube -p 9000:9000 -e sonar.forceAuthentication=false sonarqube:community
           
           echo "Waiting for SonarQube to be ready (this takes around 1-2 mins)..."
-          until $(curl --output /dev/null --silent --head --fail http://localhost:9000); do
+          until [ "$(curl -s http://localhost:9000/api/system/status | jq -r '.status' 2>/dev/null)" = "UP" ]; do
             printf '.'
             sleep 5
           done
-          echo "\nSonarQube is UP and Running!"
+          echo "\nSonarQube is fully UP, Ready and Running!"
 
       # 2. measure each run time
       - name: Execute 30 Runs (Timed)
