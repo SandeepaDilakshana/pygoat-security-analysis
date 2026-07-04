@@ -91,10 +91,20 @@ jobs:
             echo "Run $i Completed in ${DURATION}s with $ALERT_COUNT alerts."
           done
 
-      # 3. Upload the final master CSV file as a GitHub Actions artifact for download
+      # 3. Export SonarQube Report to JSON using REST API
+      - name: Export SonarQube Issues to JSON Artifact
+        run: |
+          echo "Fetching all code issues and vulnerabilities from SonarQube API..."
+          # උපරිම වශයෙන් issues 500ක් දක්වා JSON එකට එකතු කරගැනීමට 'ps=500' යොදා ඇත
+          curl -s -u admin:admin "http://localhost:9000/api/issues/search?componentKeys=pygoat-local&ps=500" > results/sonarqube_report.json
+          echo "JSON Report successfully saved to results/sonarqube_report.json"
+
+      # 4. Upload CSV and JSON files as GitHub Actions artifacts for download
       - name: Upload Local SonarQube Master Results
         uses: actions/upload-artifact@v4
         with:
           name: sonarqube-local-master-results
-          path: results/sonarqube_local_master_results.csv
+          path: |
+            results/sonarqube_local_master_results.csv
+            results/sonarqube_report.json
           retention-days: 90
