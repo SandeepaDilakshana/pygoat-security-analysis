@@ -1,0 +1,84 @@
+name: SonarQube Local Docker - 30 Run Speed Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  sonarqube-local-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout PyGoat
+        uses: actions/checkout@v4
+        with:
+          repository: adeyosemanputra/pygoat
+          path: pygoat
+          fetch-depth: 0
+
+      # 1. Turning up SonarQube Server using Docker
+      - name: Start Local SonarQube Server via Docker
+        run: |
+          echo "Starting SonarQube Container..."
+          # Disable the forced password change on first login by setting -e sonar.forceAuthentication=false
+          docker run -d --name sonarqube -p 9000:9000 -e sonar.forceAuthentication=false sonarqube:community
+          
+          echo "Waiting for SonarQube to be ready (this takes around 1-2 mins)..."
+          until $(curl --output /dev/null --silent --head --fail http://localhost:9000); do
+            printf '.'
+            sleep 5
+          done
+          echo "\nSonarQube is UP and Running!"
+
+      # 2. measure each run time
+      - name: Execute 30 Runs (Timed)
+        id: scanner_runs
+        run: |
+          mkdir -p results
+          
+          echo "tool,run_number,duration_seconds,alert_count" > results/sonarqube_local_master_results.csv
+          
+          # Downloading SonarQube CLI Scanner to the Runner
+          wget -q https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-5.0.1.3006-linux.zip
+          unzip -q sonar-scanner-cli-5.0.1.3006-linux.zip
+          export PATH=$PATH:$(pwd)/sonar-scanner-5.0.1.3006-linux/bin
+
+          # Sequentially runs 30 rounds using a loop
+          for i in {1..30}
+          do
+            echo "--------------------------------------"
+            echo "Starting Local Run $i/30"
+            echo "--------------------------------------"
+            
+            START=$(date +%s.%N)
+            
+            # Scan the source code and send the analysis to the local SonarQube server (using the default admin credentials)
+            sonar-scanner \
+              -Dsonar.host.url=http://localhost:9000 \
+              -Dsonar.login=admin \
+              -Dsonar.password=admin \
+              -Dsonar.projectKey=pygoat-local \
+              -Dsonar.projectName=pygoat-local \
+              -Dsonar.sources=pygoat \
+              -Dsonar.scm.disabled=true \
+              -Dsonar.python.version=3.11 \
+              -Dsonar.sourceEncoding=UTF-8 \
+              -Dsonar.qualitygate.wait=true
+
+            END=$(date +%s.%N)
+            DURATION=$(echo "$END - $START" | bc)
+            
+            # Retrieve the detected vulnerability count from the local SonarQube server using the REST API
+            ALERT_COUNT=$(curl -s -u admin:admin "http://localhost:9000/api/issues/search?componentKeys=pygoat-local&types=VULNERABILITY&ps=1" | jq '.paging.total')
+            
+            # Adding data to the CSV
+            echo "sonarqube_local,$i,$DURATION,$ALERT_COUNT" >> results/sonarqube_local_master_results.csv
+            echo "Run $i Completed in ${DURATION}s with $ALERT_COUNT alerts."
+          done
+
+      # 3. Upload the final master CSV file as a GitHub Actions artifact for download
+      - name: Upload Local SonarQube Master Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: sonarqube-local-master-results
+          path: results/sonarqube_local_master_results.csv
+          retention-days: 90
