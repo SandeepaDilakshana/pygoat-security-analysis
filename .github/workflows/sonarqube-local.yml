@@ -15,23 +15,38 @@ jobs:
           path: pygoat
           fetch-depth: 0
 
-      # 1. Turning up SonarQube Server using Docker (Anonymous scanning enabled)
+      # 1. Turning up SonarQube Server and Auto-Generating a Security Token
       - name: Start Local SonarQube Server via Docker
+        id: sonarqube_setup
         run: |
           echo "Starting SonarQube Container..."
-          docker run -d --name sonarqube -p 9000:9000 \
-            -e sonar.forceAuthentication=false \
-            -e sonar.scanAllInAnonymous=true \
-            sonarqube:community
+          # Start the SonarQube container with relaxed default security settings
+          docker run -d --name sonarqube -p 9000:9000 -e sonar.forceAuthentication=false sonarqube:community
           
           echo "Waiting for SonarQube Server to be status 'UP' (This takes around 1-2 minutes)..."
           until [ "$(curl -s http://localhost:9000/api/system/status | jq -r '.status' 2>/dev/null)" = "UP" ]; do
             printf '.'
             sleep 5
           done
-          echo "\nSonarQube is fully UP, Ready and Running!"
+          echo -e "\nSonarQube is fully UP!"
 
-      # 2. measure each run time
+          echo "Generating a secure Analysis Token via SonarQube REST API..."
+          # Create a new authentication token named 'my-research-token' using the SonarQube API
+          TOKEN_RESPONSE=$(curl -s -u admin:admin -X POST "http://localhost:9000/api/user_tokens/generate?name=my-research-token&type=GLOBAL_ANALYSIS_TOKEN")
+          
+          # Extract the token value from the JSON response
+          GENERATED_TOKEN=$(echo "$TOKEN_RESPONSE" | jq -r '.token')
+          
+          if [ "$GENERATED_TOKEN" = "null" ] || [ -z "$GENERATED_TOKEN" ]; then
+            echo "ERROR: Failed to generate SonarQube Token. Response was: $TOKEN_RESPONSE"
+            exit 1
+          fi
+          
+          echo "Token Generated Successfully!"
+          # Save this token to GitHub environment for the next step (Step 2) access
+          echo "SONAR_LOCAL_TOKEN=$GENERATED_TOKEN" >> $GITHUB_ENV
+
+      # 2. measure each run time (Using the auto-generated token)
       - name: Execute 30 Runs (Timed)
         id: scanner_runs
         run: |
@@ -53,9 +68,10 @@ jobs:
             
             START=$(date +%s.%N)
             
-            # Scan the source code without password (scanAllInAnonymous mode)
+            # Scan the source code using the SECURE AUTO-GENERATED TOKEN ($SONAR_LOCAL_TOKEN)
             sonar-scanner \
               -Dsonar.host.url=http://localhost:9000 \
+              -Dsonar.token=$SONAR_LOCAL_TOKEN \
               -Dsonar.projectKey=pygoat-local \
               -Dsonar.projectName=pygoat-local \
               -Dsonar.sources=pygoat \
