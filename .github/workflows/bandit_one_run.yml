@@ -1,0 +1,96 @@
+name: Bandit SAST - Single Run Speed & Consistency Test with SARIF
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ master ]
+
+jobs:
+  bandit-scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read       
+      security-events: write 
+      actions: read        
+    strategy:
+      fail-fast: false
+      matrix:
+        run_number: [1]
+
+    steps:
+      - name: Checkout PyGoat (target codebase)
+        uses: actions/checkout@v4
+        with:
+          repository: adeyosemanputra/pygoat
+          path: pygoat
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Bandit and SARIF formatter
+        run: pip install bandit bandit-sarif-formatter
+
+      - name: Run Bandit scan (timed)
+        id: bandit_run
+        run: |
+          mkdir -p results
+          START=$(date +%s.%N)
+
+          # JSON output (For Research)
+          bandit -r pygoat -f json -o results/bandit_run_${{ matrix.run_number }}.json --exit-zero
+          
+          # SARIF output (GitHub Security tab)
+          bandit -r pygoat -f sarif -o results/bandit_run_${{ matrix.run_number }}.sarif --exit-zero
+
+          END=$(date +%s.%N)
+          DURATION=$(echo "$END - $START" | bc)
+          echo "duration=$DURATION" >> "$GITHUB_OUTPUT"
+          echo "Run ${{ matrix.run_number }}: ${DURATION}s"
+
+      - name: Record run metadata (time + alert count)
+        run: |
+          python3 - <<'EOF'
+          import json, os, csv
+
+          run_number = "${{ matrix.run_number }}"
+          duration = "${{ steps.bandit_run.outputs.duration }}"
+
+          with open(f"results/bandit_run_{run_number}.json") as f:
+              data = json.load(f)
+
+          alert_count = len(data.get("results", []))
+
+          row = {
+              "tool": "bandit",
+              "run_number": run_number,
+              "duration_seconds": duration,
+              "alert_count": alert_count
+          }
+
+          file_exists = os.path.exists("results/bandit_summary.csv")
+          with open("results/bandit_summary.csv", "a", newline="") as f:
+              writer = csv.DictWriter(f, fieldnames=row.keys())
+              if not file_exists:
+                  writer.writeheader()
+              writer.writerow(row)
+
+          print(row)
+          EOF
+
+      - name: Upload Bandit scan results to GitHub Security tab
+        if: matrix.run_number == 1
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: results/bandit_run_1.sarif
+
+      - name: Upload Bandit Single Run Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: bandit-single-run-results
+          path: |
+            results/bandit_run_${{ matrix.run_number }}.json
+            results/bandit_run_${{ matrix.run_number }}.sarif
+            results/bandit_summary.csv
+          retention-days: 30
