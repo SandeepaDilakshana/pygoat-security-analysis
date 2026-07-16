@@ -1,0 +1,100 @@
+name: SonarQube Local Docker - Single Run Speed Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  sonarqube-local-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout PyGoat
+        uses: actions/checkout@v4
+        with:
+          repository: adeyosemanputra/pygoat
+          path: pygoat
+          fetch-depth: 0
+
+      - name: Start Local SonarQube Server via Docker
+        id: sonarqube_setup
+        run: |
+          echo "Starting SonarQube Container..."
+          # Start the SonarQube container with relaxed default security settings
+          docker run -d --name sonarqube -p 9000:9000 -e sonar.forceAuthentication=false sonarqube:community
+          
+          echo "Waiting for SonarQube Server to be status 'UP' (This takes around 1-2 minutes)..."
+          until [ "$(curl -s http://localhost:9000/api/system/status | jq -r '.status' 2>/dev/null)" = "UP" ]; do
+            printf '.'
+            sleep 5
+          done
+          echo -e "\nSonarQube is fully UP!"
+
+          echo "Generating a secure Analysis Token via SonarQube REST API..."
+          # Create a new authentication token named 'my-research-token' using the SonarQube API
+          TOKEN_RESPONSE=$(curl -s -u admin:admin -X POST "http://localhost:9000/api/user_tokens/generate?name=my-research-token&type=GLOBAL_ANALYSIS_TOKEN")
+          
+          GENERATED_TOKEN=$(echo "$TOKEN_RESPONSE" | jq -r '.token')
+          
+          if [ "$GENERATED_TOKEN" = "null" ] || [ -z "$GENERATED_TOKEN" ]; then
+            echo "ERROR: Failed to generate SonarQube Token. Response was: $TOKEN_RESPONSE"
+            exit 1
+          fi
+          
+          echo "Token Generated Successfully!"
+          # Save this token to GitHub environment for the next step (Step 2) access
+          echo "SONAR_LOCAL_TOKEN=$GENERATED_TOKEN" >> $GITHUB_ENV
+
+      - name: Execute Single Run
+        id: scanner_run
+        run: |
+          mkdir -p results
+          
+          echo "tool,run_number,duration_seconds,alert_count" > results/sonarqube_local_master_results.csv
+          
+          # Downloading SonarQube CLI Scanner to the Runner
+          wget -q https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-5.0.1.3006-linux.zip
+          unzip -q sonar-scanner-cli-5.0.1.3006-linux.zip
+          export PATH=$PATH:$(pwd)/sonar-scanner-5.0.1.3006-linux/bin
+
+          echo "--------------------------------------"
+          echo "Starting Single Local Run"
+          echo "--------------------------------------"
+          
+          START=$(date +%s.%N)
+          
+          # Scan the source code using the SECURE AUTO-GENERATED TOKEN ($SONAR_LOCAL_TOKEN)
+          sonar-scanner \
+            -Dsonar.host.url=http://localhost:9000 \
+            -Dsonar.token=$SONAR_LOCAL_TOKEN \
+            -Dsonar.projectKey=pygoat-local \
+            -Dsonar.projectName=pygoat-local \
+            -Dsonar.sources=pygoat \
+            -Dsonar.scm.disabled=true \
+            -Dsonar.python.version=3.11 \
+            -Dsonar.sourceEncoding=UTF-8 \
+            -Dsonar.qualitygate.wait=true
+
+          END=$(date +%s.%N)
+          DURATION=$(echo "$END - $START" | bc)
+          
+          # Retrieve the detected vulnerability count from the local SonarQube server using the REST API
+          ALERT_COUNT=$(curl -s -u admin:admin "http://localhost:9000/api/issues/search?componentKeys=pygoat-local&types=VULNERABILITY&ps=1" | jq '.paging.total')
+          
+          # Adding data to the CSV (Run number is set to 1)
+          echo "sonarqube_local,1,$DURATION,$ALERT_COUNT" >> results/sonarqube_local_master_results.csv
+          echo "Run Completed in ${DURATION}s with $ALERT_COUNT alerts."
+
+      - name: Export SonarQube Issues to JSON Artifact
+        run: |
+          echo "Fetching all code issues and vulnerabilities from SonarQube API..."
+          curl -s -u admin:admin "http://localhost:9000/api/issues/search?componentKeys=pygoat-local&ps=500" | jq . > results/sonarqube_report.json
+          echo "JSON Report successfully saved to results/sonarqube_report.json"
+
+      - name: Upload Local SonarQube Master Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: sonarqube-local-single-run-results
+          path: |
+            results/sonarqube_local_master_results.csv
+            results/sonarqube_report.json
+          retention-days: 90
